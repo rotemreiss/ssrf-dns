@@ -2,6 +2,12 @@
 
 A lightweight DNS server for testing SSRF via DNS rebinding.
 
+## Install
+
+```bash
+go install github.com/rotemreiss/ssrf-dns@latest
+```
+
 ## Build
 
 ```bash

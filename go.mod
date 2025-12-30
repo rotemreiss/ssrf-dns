@@ -1,4 +1,4 @@
-module github.com/rreiss/ssrf-dns
+module github.com/rotemreiss/ssrf-dns
 
 go 1.25.2
 
