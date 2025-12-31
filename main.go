@@ -143,7 +143,14 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(msg)
 }
 
+const Version = "0.7.3"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Printf("ssrf-dns version %s\n", Version)
+		os.Exit(0)
+	}
+
 	validIPStr := flag.String("valid", "", "Valid IP address to return on first request")
 	internalIPStr := flag.String("internal", "", "Internal IP address to return on subsequent requests")
 	logFileStr := flag.String("log", "", "Path to log file (default: stdout)")

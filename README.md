@@ -19,6 +19,7 @@ go build -o ssrf-dns .
 ## Usage
 
 ```bash
+ssrf-dns version
 ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
 ```
 
