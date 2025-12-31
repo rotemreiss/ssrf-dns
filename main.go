@@ -69,18 +69,27 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 				if question.Qtype == targetType {
 					hdr.Rrtype = targetType
+					added := false
 					switch record.Type {
 					case "A":
 						ip := net.ParseIP(record.Value)
 						if ip != nil {
 							rr = append(rr, &dns.A{Hdr: hdr, A: ip})
+							added = true
 						} else {
 							rs.logger.Printf("Error parsing static A record IP: %s", record.Value)
 						}
 					case "TXT":
 						rr = append(rr, &dns.TXT{Hdr: hdr, Txt: []string{record.Value}})
+						added = true
 					case "CNAME":
 						rr = append(rr, &dns.CNAME{Hdr: hdr, Target: dns.Fqdn(record.Value)})
+						added = true
+					}
+
+					if added {
+						remoteAddr, _, _ := net.SplitHostPort(w.RemoteAddr().String())
+						rs.logger.Printf("Src: %s, Domain: %s, Action: STATIC, Type: %s, Value: %s", remoteAddr, domain, record.Type, record.Value)
 					}
 				}
 			}
@@ -145,7 +154,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(msg)
 }
 
-const Version = "0.7.4"
+const Version = "0.7.5"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
