@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,7 +61,7 @@ func LoadStaticRecords(filePath string) (map[string][]RecordConfig, error) {
 	// Convert map[string]RecordList to map[string][]RecordConfig
 	result := make(map[string][]RecordConfig)
 	for k, v := range config.Records {
-		result[k] = v
+		result[strings.ToLower(k)] = v
 	}
 
 	return result, nil

@@ -44,7 +44,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 	for _, question := range r.Question {
 		domain := question.Name
-		cleanDomain := strings.TrimSuffix(domain, ".")
+		cleanDomain := strings.ToLower(strings.TrimSuffix(domain, "."))
 		var rr []dns.RR
 
 		// 1. Check Static Records
