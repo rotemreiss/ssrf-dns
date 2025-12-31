@@ -9,6 +9,8 @@ jobs:
   build:
     name: Build Linux Binary
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -30,3 +32,14 @@ jobs:
           path: ssrf-dns-linux-amd64
           if-no-files-found: error
           retention-days: 5
+
+      - name: Update Latest Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: latest
+          name: Latest Build
+          files: ssrf-dns-linux-amd64
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
