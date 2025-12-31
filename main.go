@@ -116,9 +116,9 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			}
 
 			rs.mu.Lock()
-			seen := rs.seenDomains[domain]
+			seen := rs.seenDomains[cleanDomain]
 			if !seen {
-				rs.seenDomains[domain] = true
+				rs.seenDomains[cleanDomain] = true
 			}
 			rs.mu.Unlock()
 
