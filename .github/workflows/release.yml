@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build Linux Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build
+        run: |
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o ssrf-dns-linux-amd64 .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssrf-dns-linux-amd64
+          path: ssrf-dns-linux-amd64
+          if-no-files-found: error
+          retention-days: 5
