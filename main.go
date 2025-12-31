@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/miekg/dns"
@@ -14,19 +15,23 @@ import (
 
 // RecordState tracks the state of a domain
 type RecordState struct {
-	mu          sync.Mutex
-	seenDomains map[string]bool
-	validIP     net.IP
-	internalIP  net.IP
-	logger      *log.Logger
+	mu           sync.Mutex
+	seenDomains  map[string]bool
+	validIP      net.IP
+	internalIP   net.IP
+	logger       *log.Logger
+	targetDomain string
+	upstream     string
 }
 
-func NewRecordState(validIP, internalIP net.IP, logger *log.Logger) *RecordState {
+func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, logger *log.Logger) *RecordState {
 	return &RecordState{
-		seenDomains: make(map[string]bool),
-		validIP:     validIP,
-		internalIP:  internalIP,
-		logger:      logger,
+		seenDomains:  make(map[string]bool),
+		validIP:      validIP,
+		internalIP:   internalIP,
+		targetDomain: targetDomain,
+		upstream:     upstream,
+		logger:       logger,
 	}
 }
 
@@ -39,6 +44,22 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		// Only handle A records
 		if question.Qtype == dns.TypeA {
 			domain := question.Name
+			cleanDomain := strings.TrimSuffix(domain, ".")
+
+			// Check if it matches our target domain (or subdomain)
+			isMatch := strings.HasSuffix(cleanDomain, rs.targetDomain)
+			if !isMatch {
+				// Proxy to upstream
+				c := new(dns.Client)
+				in, _, err := c.Exchange(r, rs.upstream)
+				if err != nil {
+					rs.logger.Printf("Proxy Error: %v", err)
+					return
+				}
+				w.WriteMsg(in)
+				rs.logger.Printf("Src: %s, Domain: %s, Action: PROXY", w.RemoteAddr(), domain)
+				return
+			}
 
 			rs.mu.Lock()
 			seen := rs.seenDomains[domain]
@@ -85,10 +106,12 @@ func main() {
 	internalIPStr := flag.String("internal", "", "Internal IP address to return on subsequent requests")
 	logFileStr := flag.String("log", "", "Path to log file (default: stdout)")
 	portStr := flag.String("port", "53", "UDP port to listen on")
+	targetDomain := flag.String("domain", "", "Target domain (mandatory) - queries for this domain (and subdomains) will be rebinded, others proxied")
+	upstreamDNS := flag.String("upstream", "8.8.8.8:53", "Upstream DNS server for non-matching domains")
 	flag.Parse()
 
-	if *validIPStr == "" || *internalIPStr == "" {
-		fmt.Println("Error: -valid and -internal flags are required")
+	if *validIPStr == "" || *internalIPStr == "" || *targetDomain == "" {
+		fmt.Println("Error: -valid, -internal and -domain flags are required")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -114,14 +137,12 @@ func main() {
 			os.Exit(1)
 		}
 		defer f.Close()
-		logOutput = f // Log to file AND stdout? Requirement said "to stdout OR to a log file". Let's stick to one.
-		// Actually, usually tools like this might be nice to see on stdout too if logged to file, but let's strictly follow "or".
-		// Actually, let's keep it simple: if file is provided, write to file. If not, write to stdout.
+		logOutput = f
 	}
 
 	logger := log.New(logOutput, "", log.LstdFlags)
 
-	recordState := NewRecordState(validIP, internalIP, logger)
+	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, logger)
 
 	// DNS server handler
 	dns.HandleFunc(".", recordState.handleDNSRequest)
@@ -129,6 +150,7 @@ func main() {
 	server := &dns.Server{Addr: ":" + *portStr, Net: "udp"}
 
 	fmt.Printf("Starting Rebind DNS Server on port %s\n", *portStr)
+	fmt.Printf("Target Domain: %s (and subdomains)\n", *targetDomain)
 	fmt.Printf("First query: %s\n", validIP.String())
 	fmt.Printf("Subsequent queries: %s\n", internalIP.String())
 
