@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -23,9 +24,10 @@ type RecordState struct {
 	targetDomain  string
 	upstream      string
 	staticRecords map[string][]RecordConfig
+	delay         time.Duration
 }
 
-func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, logger *log.Logger) *RecordState {
+func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, delay time.Duration, logger *log.Logger) *RecordState {
 	return &RecordState{
 		seenDomains:   make(map[string]bool),
 		validIP:       validIP,
@@ -33,6 +35,7 @@ func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream st
 		targetDomain:  targetDomain,
 		upstream:      upstream,
 		staticRecords: records,
+		delay:         delay,
 		logger:        logger,
 	}
 }
@@ -130,6 +133,10 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				stateStr = "NEW"
 			}
 
+			if rs.delay > 0 {
+				time.Sleep(rs.delay)
+			}
+
 			rr = append(rr, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   question.Name,
@@ -154,7 +161,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(msg)
 }
 
-const Version = "0.7.6"
+const Version = "0.8.0"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
@@ -169,6 +176,7 @@ func main() {
 	targetDomain := flag.String("domain", "", "Target domain (mandatory) - queries for this domain (and subdomains) will be rebinded, others proxied")
 	upstreamDNS := flag.String("upstream", "8.8.8.8:53", "Upstream DNS server for non-matching domains")
 	recordsFile := flag.String("records", "", "Path to YAML file with static records")
+	delayMs := flag.Int("delay", 0, "Delay in milliseconds before replying to dynamic record queries")
 	flag.Parse()
 
 	if *validIPStr == "" || *internalIPStr == "" || *targetDomain == "" {
@@ -210,7 +218,7 @@ func main() {
 
 	logger := log.New(logOutput, "", log.LstdFlags)
 
-	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, logger)
+	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, time.Duration(*delayMs)*time.Millisecond, logger)
 
 	// DNS server handler
 	dns.HandleFunc(".", recordState.handleDNSRequest)
