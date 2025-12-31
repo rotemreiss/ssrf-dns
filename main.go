@@ -154,7 +154,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(msg)
 }
 
-const Version = "0.7.5"
+const Version = "0.7.6"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
