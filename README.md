@@ -13,13 +13,13 @@ go install github.com/rotemreiss/ssrf-dns@latest
 ```bash
 git clone https://github.com/rotemreiss/ssrf-dns.git
 cd ssrf-dns
-go build -o ssrf-dns main.go
+go build -o ssrf-dns .
 ```
 
 ## Usage
 
 ```bash
-ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-port <port>] [-upstream <addr>] [-log <file>]
+ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
 ```
 
 **Example:**
@@ -29,9 +29,35 @@ ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053
 ```
 
 - **Queries for `*.example.com`**:
+  - **Static Records**: If defined in YAML, returned immediately (precedes rebind logic).
   - First Query: Returns `valid` IP.
   - Subsequent Queries: Returns `internal` IP.
 - **Other Queries (e.g., Google)**: Proxied to standard DNS (default `8.8.8.8:53` or specified via `-upstream`).
+
+## Static Records (YAML)
+
+You can define static records (A, TXT, CNAME) in a YAML file. These records take precedence over the rebind logic.
+
+1.  **Create `records.yaml`**:
+
+    ```yaml
+    record:
+      foo.example.com:
+        type: TXT
+        value: "thisisatextualvalue"
+      bar.example.com:
+        type: A
+        value: "1.1.1.1"
+      cname.example.com:
+        type: CNAME
+        value: "google.com."
+    ```
+
+2.  **Run with `-records` flag**:
+
+    ```bash
+    ssrf-dns ... -records records.yaml
+    ```
 
 ## Testing
 

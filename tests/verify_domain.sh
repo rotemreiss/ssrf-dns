@@ -4,7 +4,7 @@ ROOT_DIR="$DIR/.."
 
 # Build from root
 cd "$ROOT_DIR"
-go build -o ssrf-dns main.go
+go build -o ssrf-dns .
 
 # Start server with domain filter
 echo "Starting server with -domain example.com..."

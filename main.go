@@ -15,23 +15,25 @@ import (
 
 // RecordState tracks the state of a domain
 type RecordState struct {
-	mu           sync.Mutex
-	seenDomains  map[string]bool
-	validIP      net.IP
-	internalIP   net.IP
-	logger       *log.Logger
-	targetDomain string
-	upstream     string
+	mu            sync.Mutex
+	seenDomains   map[string]bool
+	validIP       net.IP
+	internalIP    net.IP
+	logger        *log.Logger
+	targetDomain  string
+	upstream      string
+	staticRecords map[string]RecordConfig
 }
 
-func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, logger *log.Logger) *RecordState {
+func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string]RecordConfig, logger *log.Logger) *RecordState {
 	return &RecordState{
-		seenDomains:  make(map[string]bool),
-		validIP:      validIP,
-		internalIP:   internalIP,
-		targetDomain: targetDomain,
-		upstream:     upstream,
-		logger:       logger,
+		seenDomains:   make(map[string]bool),
+		validIP:       validIP,
+		internalIP:    internalIP,
+		targetDomain:  targetDomain,
+		upstream:      upstream,
+		staticRecords: records,
+		logger:        logger,
 	}
 }
 
@@ -41,11 +43,49 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	msg.Authoritative = true
 
 	for _, question := range r.Question {
-		// Only handle A records
-		if question.Qtype == dns.TypeA {
-			domain := question.Name
-			cleanDomain := strings.TrimSuffix(domain, ".")
+		domain := question.Name
+		cleanDomain := strings.TrimSuffix(domain, ".")
+		var rr dns.RR
 
+		// 1. Check Static Records
+		if record, ok := rs.staticRecords[cleanDomain]; ok {
+			hdr := dns.RR_Header{
+				Name:  question.Name,
+				Class: dns.ClassINET,
+				Ttl:   300,
+			}
+
+			// Map string type to dns.Type
+			var targetType uint16
+			switch record.Type {
+			case "A":
+				targetType = dns.TypeA
+			case "TXT":
+				targetType = dns.TypeTXT
+			case "CNAME":
+				targetType = dns.TypeCNAME
+			}
+
+			if question.Qtype == targetType {
+				hdr.Rrtype = targetType
+				switch record.Type {
+				case "A":
+					ip := net.ParseIP(record.Value)
+					if ip != nil {
+						rr = &dns.A{Hdr: hdr, A: ip}
+					} else {
+						rs.logger.Printf("Error parsing static A record IP: %s", record.Value)
+					}
+				case "TXT":
+					rr = &dns.TXT{Hdr: hdr, Txt: []string{record.Value}}
+				case "CNAME":
+					rr = &dns.CNAME{Hdr: hdr, Target: dns.Fqdn(record.Value)}
+				}
+			}
+		}
+
+		// 2. If no static record found (or type mismatch), proceed with standard logic ONLY for A records
+		if rr == nil && question.Qtype == dns.TypeA {
 			// Check if it matches our target domain (or subdomain)
 			isMatch := strings.HasSuffix(cleanDomain, rs.targetDomain)
 			if !isMatch {
@@ -54,7 +94,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				in, _, err := c.Exchange(r, rs.upstream)
 				if err != nil {
 					rs.logger.Printf("Proxy Error: %v", err)
-					return
+					continue
 				}
 				w.WriteMsg(in)
 				rs.logger.Printf("Src: %s, Domain: %s, Action: PROXY", w.RemoteAddr(), domain)
@@ -79,7 +119,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				stateStr = "NEW"
 			}
 
-			rr := &dns.A{
+			rr = &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   question.Name,
 					Rrtype: dns.TypeA,
@@ -88,13 +128,15 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				},
 				A: ipToReturn,
 			}
-			msg.Answer = append(msg.Answer, rr)
 
-			// Log the request
-			// Format: Timestamp, Source IP, Domain, Response IP, State
+			// Log the rebind request
 			remoteAddr, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 			rs.logger.Printf("Src: %s, Domain: %s, Resp: %s, State: %s",
 				remoteAddr, domain, ipToReturn.String(), stateStr)
+		}
+
+		if rr != nil {
+			msg.Answer = append(msg.Answer, rr)
 		}
 	}
 
@@ -108,6 +150,7 @@ func main() {
 	portStr := flag.String("port", "53", "UDP port to listen on")
 	targetDomain := flag.String("domain", "", "Target domain (mandatory) - queries for this domain (and subdomains) will be rebinded, others proxied")
 	upstreamDNS := flag.String("upstream", "8.8.8.8:53", "Upstream DNS server for non-matching domains")
+	recordsFile := flag.String("records", "", "Path to YAML file with static records")
 	flag.Parse()
 
 	if *validIPStr == "" || *internalIPStr == "" || *targetDomain == "" {
@@ -128,6 +171,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Load static records
+	records, err := LoadStaticRecords(*recordsFile)
+	if err != nil {
+		fmt.Printf("Error loading static records: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Setup logging
 	var logOutput io.Writer = os.Stdout
 	if *logFileStr != "" {
@@ -142,7 +192,7 @@ func main() {
 
 	logger := log.New(logOutput, "", log.LstdFlags)
 
-	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, logger)
+	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, logger)
 
 	// DNS server handler
 	dns.HandleFunc(".", recordState.handleDNSRequest)
@@ -151,6 +201,9 @@ func main() {
 
 	fmt.Printf("Starting Rebind DNS Server on port %s\n", *portStr)
 	fmt.Printf("Target Domain: %s (and subdomains)\n", *targetDomain)
+	if len(records) > 0 {
+		fmt.Printf("Loaded %d static records\n", len(records))
+	}
 	fmt.Printf("First query: %s\n", validIP.String())
 	fmt.Printf("Subsequent queries: %s\n", internalIP.String())
 
