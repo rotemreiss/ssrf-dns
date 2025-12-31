@@ -13,13 +13,36 @@ type RecordConfig struct {
 	Value string `yaml:"value"`
 }
 
+// RecordList is a helper type to handle both single object and list of objects
+type RecordList []RecordConfig
+
+// UnmarshalYAML implements custom unmarshaling to handle single object or list
+func (rl *RecordList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.SequenceNode {
+		var records []RecordConfig
+		if err := value.Decode(&records); err != nil {
+			return err
+		}
+		*rl = records
+		return nil
+	}
+
+	// Try single object
+	var record RecordConfig
+	if err := value.Decode(&record); err != nil {
+		return err
+	}
+	*rl = []RecordConfig{record}
+	return nil
+}
+
 // StaticRecordsConfig represents the top-level YAML structure
 type StaticRecordsConfig struct {
-	Records map[string]RecordConfig `yaml:"record"`
+	Records map[string]RecordList `yaml:"record"`
 }
 
 // LoadStaticRecords loads the YAML configuration from the given file path
-func LoadStaticRecords(filePath string) (map[string]RecordConfig, error) {
+func LoadStaticRecords(filePath string) (map[string][]RecordConfig, error) {
 	if filePath == "" {
 		return nil, nil // No file specified is not an error
 	}
@@ -34,5 +57,11 @@ func LoadStaticRecords(filePath string) (map[string]RecordConfig, error) {
 		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
 
-	return config.Records, nil
+	// Convert map[string]RecordList to map[string][]RecordConfig
+	result := make(map[string][]RecordConfig)
+	for k, v := range config.Records {
+		result[k] = v
+	}
+
+	return result, nil
 }

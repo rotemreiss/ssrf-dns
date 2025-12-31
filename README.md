@@ -52,6 +52,13 @@ You can define static records (A, TXT, CNAME) in a YAML file. These records take
       cname.example.com:
         type: CNAME
         value: "google.com."
+      
+      # Multiple records for the same domain
+      _acme-challenge.example.com:
+        - type: TXT
+          value: "value1"
+        - type: TXT
+          value: "value2"
     ```
 
 2.  **Run with `-records` flag**:

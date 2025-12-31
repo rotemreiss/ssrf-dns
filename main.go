@@ -22,10 +22,10 @@ type RecordState struct {
 	logger        *log.Logger
 	targetDomain  string
 	upstream      string
-	staticRecords map[string]RecordConfig
+	staticRecords map[string][]RecordConfig
 }
 
-func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string]RecordConfig, logger *log.Logger) *RecordState {
+func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, logger *log.Logger) *RecordState {
 	return &RecordState{
 		seenDomains:   make(map[string]bool),
 		validIP:       validIP,
@@ -45,47 +45,49 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	for _, question := range r.Question {
 		domain := question.Name
 		cleanDomain := strings.TrimSuffix(domain, ".")
-		var rr dns.RR
+		var rr []dns.RR
 
 		// 1. Check Static Records
-		if record, ok := rs.staticRecords[cleanDomain]; ok {
-			hdr := dns.RR_Header{
-				Name:  question.Name,
-				Class: dns.ClassINET,
-				Ttl:   300,
-			}
+		if records, ok := rs.staticRecords[cleanDomain]; ok {
+			for _, record := range records {
+				hdr := dns.RR_Header{
+					Name:  question.Name,
+					Class: dns.ClassINET,
+					Ttl:   300,
+				}
 
-			// Map string type to dns.Type
-			var targetType uint16
-			switch record.Type {
-			case "A":
-				targetType = dns.TypeA
-			case "TXT":
-				targetType = dns.TypeTXT
-			case "CNAME":
-				targetType = dns.TypeCNAME
-			}
-
-			if question.Qtype == targetType {
-				hdr.Rrtype = targetType
+				// Map string type to dns.Type
+				var targetType uint16
 				switch record.Type {
 				case "A":
-					ip := net.ParseIP(record.Value)
-					if ip != nil {
-						rr = &dns.A{Hdr: hdr, A: ip}
-					} else {
-						rs.logger.Printf("Error parsing static A record IP: %s", record.Value)
-					}
+					targetType = dns.TypeA
 				case "TXT":
-					rr = &dns.TXT{Hdr: hdr, Txt: []string{record.Value}}
+					targetType = dns.TypeTXT
 				case "CNAME":
-					rr = &dns.CNAME{Hdr: hdr, Target: dns.Fqdn(record.Value)}
+					targetType = dns.TypeCNAME
+				}
+
+				if question.Qtype == targetType {
+					hdr.Rrtype = targetType
+					switch record.Type {
+					case "A":
+						ip := net.ParseIP(record.Value)
+						if ip != nil {
+							rr = append(rr, &dns.A{Hdr: hdr, A: ip})
+						} else {
+							rs.logger.Printf("Error parsing static A record IP: %s", record.Value)
+						}
+					case "TXT":
+						rr = append(rr, &dns.TXT{Hdr: hdr, Txt: []string{record.Value}})
+					case "CNAME":
+						rr = append(rr, &dns.CNAME{Hdr: hdr, Target: dns.Fqdn(record.Value)})
+					}
 				}
 			}
 		}
 
 		// 2. If no static record found (or type mismatch), proceed with standard logic ONLY for A records
-		if rr == nil && question.Qtype == dns.TypeA {
+		if len(rr) == 0 && question.Qtype == dns.TypeA {
 			// Check if it matches our target domain (or subdomain)
 			isMatch := strings.HasSuffix(cleanDomain, rs.targetDomain)
 			if !isMatch {
@@ -119,7 +121,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				stateStr = "NEW"
 			}
 
-			rr = &dns.A{
+			rr = append(rr, &dns.A{
 				Hdr: dns.RR_Header{
 					Name:   question.Name,
 					Rrtype: dns.TypeA,
@@ -127,7 +129,7 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 					Ttl:    0, // No caching to ensure rebind works
 				},
 				A: ipToReturn,
-			}
+			})
 
 			// Log the rebind request
 			remoteAddr, _, _ := net.SplitHostPort(w.RemoteAddr().String())
@@ -135,15 +137,15 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				remoteAddr, domain, ipToReturn.String(), stateStr)
 		}
 
-		if rr != nil {
-			msg.Answer = append(msg.Answer, rr)
+		if len(rr) > 0 {
+			msg.Answer = append(msg.Answer, rr...)
 		}
 	}
 
 	w.WriteMsg(msg)
 }
 
-const Version = "0.7.3"
+const Version = "1.0.0"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
