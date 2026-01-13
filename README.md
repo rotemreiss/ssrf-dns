@@ -20,8 +20,22 @@ go build -o ssrf-dns .
 
 ```bash
 ssrf-dns version
-ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
+ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-after <count>] [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
 ```
+
+### Arguments
+
+| Argument | Description | Default |
+| :--- | :--- | :--- |
+| `-valid` | Valid (external) IP address to return initially | (Required) |
+| `-internal` | Internal IP address to return after rebinding | (Required) |
+| `-domain` | Target domain or subdomain to rebind | (Required) |
+| `-rebind-after`| Number of resolutions before returning the internal IP | `1` |
+| `-port` | UDP port to listen on | `53` |
+| `-upstream` | Upstream DNS server for non-matching domains | `8.8.8.8:53` |
+| `-records` | Path to YAML file containing static records | |
+| `-delay` | Delay in milliseconds before responding to queries | `0` |
+| `-log` | Path to log file (defaults to stdout) | |
 
 **Example:**
 

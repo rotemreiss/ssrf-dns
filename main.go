@@ -17,7 +17,7 @@ import (
 // RecordState tracks the state of a domain
 type RecordState struct {
 	mu            sync.Mutex
-	seenDomains   map[string]bool
+	queryCounts   map[string]int
 	validIP       net.IP
 	internalIP    net.IP
 	logger        *log.Logger
@@ -25,17 +25,19 @@ type RecordState struct {
 	upstream      string
 	staticRecords map[string][]RecordConfig
 	delay         time.Duration
+	rebindAfter   int
 }
 
-func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, delay time.Duration, logger *log.Logger) *RecordState {
+func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, delay time.Duration, rebindAfter int, logger *log.Logger) *RecordState {
 	return &RecordState{
-		seenDomains:   make(map[string]bool),
+		queryCounts:   make(map[string]int),
 		validIP:       validIP,
 		internalIP:    internalIP,
 		targetDomain:  targetDomain,
 		upstream:      upstream,
 		staticRecords: records,
 		delay:         delay,
+		rebindAfter:   rebindAfter,
 		logger:        logger,
 	}
 }
@@ -116,16 +118,14 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			}
 
 			rs.mu.Lock()
-			seen := rs.seenDomains[cleanDomain]
-			if !seen {
-				rs.seenDomains[cleanDomain] = true
-			}
+			rs.queryCounts[cleanDomain]++
+			count := rs.queryCounts[cleanDomain]
 			rs.mu.Unlock()
 
 			var ipToReturn net.IP
 			var stateStr string
 
-			if seen {
+			if count > rs.rebindAfter {
 				ipToReturn = rs.internalIP
 				stateStr = "RETURNING"
 			} else {
@@ -177,6 +177,7 @@ func main() {
 	upstreamDNS := flag.String("upstream", "8.8.8.8:53", "Upstream DNS server for non-matching domains")
 	recordsFile := flag.String("records", "", "Path to YAML file with static records")
 	delayMs := flag.Int("delay", 0, "Delay in milliseconds before replying to dynamic record queries")
+	rebindAfter := flag.Int("rebind-after", 1, "Number of queries to return valid IP before switching to internal IP")
 	flag.Parse()
 
 	if *validIPStr == "" || *internalIPStr == "" || *targetDomain == "" {
@@ -218,7 +219,7 @@ func main() {
 
 	logger := log.New(logOutput, "", log.LstdFlags)
 
-	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, time.Duration(*delayMs)*time.Millisecond, logger)
+	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, time.Duration(*delayMs)*time.Millisecond, *rebindAfter, logger)
 
 	// DNS server handler
 	dns.HandleFunc(".", recordState.handleDNSRequest)
