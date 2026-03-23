@@ -20,7 +20,7 @@ go build -o ssrf-dns .
 
 ```bash
 ssrf-dns version
-ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-after <count>] [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
+ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-after <count>] [-random] [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
 ```
 
 ### Arguments
@@ -31,6 +31,7 @@ ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-aft
 | `-internal` | Internal IP address to return after rebinding | (Required) |
 | `-domain` | Target domain or subdomain to rebind | (Required) |
 | `-rebind-after`| Number of resolutions before returning the internal IP | `1` |
+| `-random` | Randomly return valid or internal IP (rbndr-style) | `false` |
 | `-port` | UDP port to listen on | `53` |
 | `-upstream` | Upstream DNS server for non-matching domains | `8.8.8.8:53` |
 | `-records` | Path to YAML file containing static records | |
@@ -42,6 +43,14 @@ ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-aft
 ```bash
 ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053
 ```
+
+**Random mode (rbndr-style):**
+
+```bash
+ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053 -random
+```
+
+In random mode, the server uses the least significant bit of the DNS query ID to randomly select between the valid and internal IP for each query (approximately 50/50 distribution). This mirrors the approach used by [rbndr](https://github.com/taviso/rbndr). When `-random` is enabled, `-rebind-after` is ignored.
 
 - **Queries for `*.example.com`**:
   - **Static Records**: If defined in YAML, returned immediately (precedes rebind logic).

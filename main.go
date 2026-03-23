@@ -26,9 +26,10 @@ type RecordState struct {
 	staticRecords map[string][]RecordConfig
 	delay         time.Duration
 	rebindAfter   int
+	randomMode    bool
 }
 
-func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, delay time.Duration, rebindAfter int, logger *log.Logger) *RecordState {
+func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, delay time.Duration, rebindAfter int, randomMode bool, logger *log.Logger) *RecordState {
 	return &RecordState{
 		queryCounts:   make(map[string]int),
 		validIP:       validIP,
@@ -38,6 +39,7 @@ func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream st
 		staticRecords: records,
 		delay:         delay,
 		rebindAfter:   rebindAfter,
+		randomMode:    randomMode,
 		logger:        logger,
 	}
 }
@@ -117,20 +119,32 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				return
 			}
 
-			rs.mu.Lock()
-			rs.queryCounts[cleanDomain]++
-			count := rs.queryCounts[cleanDomain]
-			rs.mu.Unlock()
-
 			var ipToReturn net.IP
 			var stateStr string
 
-			if count > rs.rebindAfter {
-				ipToReturn = rs.internalIP
-				stateStr = "RETURNING"
+			if rs.randomMode {
+				// rbndr-style random resolution: use LSB of DNS query ID
+				// Since query IDs are pseudo-random, this gives ~50/50 distribution
+				if r.Id&1 == 0 {
+					ipToReturn = rs.validIP
+					stateStr = "RANDOM_VALID"
+				} else {
+					ipToReturn = rs.internalIP
+					stateStr = "RANDOM_INTERNAL"
+				}
 			} else {
-				ipToReturn = rs.validIP
-				stateStr = "NEW"
+				rs.mu.Lock()
+				rs.queryCounts[cleanDomain]++
+				count := rs.queryCounts[cleanDomain]
+				rs.mu.Unlock()
+
+				if count > rs.rebindAfter {
+					ipToReturn = rs.internalIP
+					stateStr = "RETURNING"
+				} else {
+					ipToReturn = rs.validIP
+					stateStr = "NEW"
+				}
 			}
 
 			if rs.delay > 0 {
@@ -178,10 +192,17 @@ func main() {
 	recordsFile := flag.String("records", "", "Path to YAML file with static records")
 	delayMs := flag.Int("delay", 0, "Delay in milliseconds before replying to dynamic record queries")
 	rebindAfter := flag.Int("rebind-after", 1, "Number of queries to return valid IP before switching to internal IP")
+	randomMode := flag.Bool("random", false, "Randomly return valid or internal IP using DNS query ID (rbndr-style)")
 	flag.Parse()
 
 	if *validIPStr == "" || *internalIPStr == "" || *targetDomain == "" {
 		fmt.Println("Error: -valid, -internal and -domain flags are required")
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	if *randomMode && *rebindAfter != 1 {
+		fmt.Println("Error: -random and -rebind-after cannot be used together")
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -219,7 +240,7 @@ func main() {
 
 	logger := log.New(logOutput, "", log.LstdFlags)
 
-	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, time.Duration(*delayMs)*time.Millisecond, *rebindAfter, logger)
+	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, time.Duration(*delayMs)*time.Millisecond, *rebindAfter, *randomMode, logger)
 
 	// DNS server handler
 	dns.HandleFunc(".", recordState.handleDNSRequest)
@@ -231,8 +252,13 @@ func main() {
 	if len(records) > 0 {
 		fmt.Printf("Loaded %d static records\n", len(records))
 	}
-	fmt.Printf("First query: %s\n", validIP.String())
-	fmt.Printf("Subsequent queries: %s\n", internalIP.String())
+	if *randomMode {
+		fmt.Printf("Mode: Random (rbndr-style, based on DNS query ID LSB)\n")
+	} else {
+		fmt.Printf("Mode: Sequential (rebind after %d queries)\n", *rebindAfter)
+	}
+	fmt.Printf("Valid IP: %s\n", validIP.String())
+	fmt.Printf("Internal IP: %s\n", internalIP.String())
 
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Printf("Failed to start server: %s\n", err.Error())
