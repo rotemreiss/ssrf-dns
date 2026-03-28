@@ -20,7 +20,7 @@ go build -o ssrf-dns .
 
 ```bash
 ssrf-dns version
-ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-after <count>] [-random] [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
+ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-after <count>] [-random] [-internal-for <indexes>] [-valid-for <indexes>] [-port <port>] [-upstream <addr>] [-records <file>] [-log <file>]
 ```
 
 ### Arguments
@@ -35,6 +35,8 @@ ssrf-dns -valid <valid_ip> -internal <internal_ip> -domain <domain> [-rebind-aft
 | `-port` | UDP port to listen on | `53` |
 | `-upstream` | Upstream DNS server for non-matching domains | `8.8.8.8:53` |
 | `-records` | Path to YAML file containing static records | |
+| `-internal-for`| Comma-separated query indexes that return the internal IP (all others return valid) | |
+| `-valid-for` | Comma-separated query indexes that return the valid IP (all others return internal) | |
 | `-delay` | Delay in milliseconds before responding to queries | `0` |
 | `-log` | Path to log file (defaults to stdout) | |
 
@@ -50,7 +52,44 @@ ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053
 ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053 -random
 ```
 
-In random mode, the server uses the least significant bit of the DNS query ID to randomly select between the valid and internal IP for each query (approximately 50/50 distribution). This mirrors the approach used by [rbndr](https://github.com/taviso/rbndr). When `-random` is enabled, `-rebind-after` is ignored.
+In random mode, the server uses the least significant bit of the DNS query ID to randomly select between the valid and internal IP for each query (approximately 50/50 distribution). This mirrors the approach used by [rbndr](https://github.com/taviso/rbndr). When `-random` is enabled, `-rebind-after`, `-internal-for`, and `-valid-for` cannot be used.
+
+### Per-query overrides
+
+Use `-internal-for` and `-valid-for` to control exactly which query indexes return which IP.
+
+**Return valid IP for all queries except query 6 (which returns internal):**
+
+```bash
+ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053 -internal-for 6
+```
+
+**Return internal IP for all queries except queries 2 and 4 (which return valid):**
+
+```bash
+ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053 -valid-for 2,4
+```
+
+**Combine with `-rebind-after` for fine-grained control:**
+
+```bash
+# Queries 1-2 return valid, query 3+ return internal, except query 4 returns valid
+ssrf-dns -valid 1.1.1.1 -internal 127.0.0.1 -domain example.com -port 10053 -rebind-after 2 -valid-for 4
+```
+
+| Flags used | Default behavior | Overrides |
+| :--- | :--- | :--- |
+| `-internal-for` alone | All queries return valid IP | Listed indexes → internal |
+| `-valid-for` alone | All queries return internal IP | Listed indexes → valid |
+| Both without `-rebind-after` | All queries return internal IP (`rebind-after=0`) | Each list overrides accordingly |
+| `-rebind-after N` + either/both | Standard rebind-after behavior | Listed indexes override the base |
+
+Override evaluation order: `-valid-for` → `-internal-for` → rebind-after base logic.
+
+**Validation rules:**
+- Query indexes must be positive integers (≥ 1).
+- The same index cannot appear in both `-internal-for` and `-valid-for`.
+- `-random` cannot be combined with `-internal-for` or `-valid-for`.
 
 - **Queries for `*.example.com`**:
   - **Static Records**: If defined in YAML, returned immediately (precedes rebind logic).

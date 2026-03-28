@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,31 +18,35 @@ import (
 
 // RecordState tracks the state of a domain
 type RecordState struct {
-	mu            sync.Mutex
-	queryCounts   map[string]int
-	validIP       net.IP
-	internalIP    net.IP
-	logger        *log.Logger
-	targetDomain  string
-	upstream      string
-	staticRecords map[string][]RecordConfig
-	delay         time.Duration
-	rebindAfter   int
-	randomMode    bool
+	mu                 sync.Mutex
+	queryCounts        map[string]int
+	validIP            net.IP
+	internalIP         net.IP
+	logger             *log.Logger
+	targetDomain       string
+	upstream           string
+	staticRecords      map[string][]RecordConfig
+	delay              time.Duration
+	rebindAfter        int
+	randomMode         bool
+	internalForIndexes map[int]bool
+	validForIndexes    map[int]bool
 }
 
-func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, delay time.Duration, rebindAfter int, randomMode bool, logger *log.Logger) *RecordState {
+func NewRecordState(validIP, internalIP net.IP, targetDomain string, upstream string, records map[string][]RecordConfig, delay time.Duration, rebindAfter int, randomMode bool, internalForIndexes, validForIndexes map[int]bool, logger *log.Logger) *RecordState {
 	return &RecordState{
-		queryCounts:   make(map[string]int),
-		validIP:       validIP,
-		internalIP:    internalIP,
-		targetDomain:  targetDomain,
-		upstream:      upstream,
-		staticRecords: records,
-		delay:         delay,
-		rebindAfter:   rebindAfter,
-		randomMode:    randomMode,
-		logger:        logger,
+		queryCounts:        make(map[string]int),
+		validIP:            validIP,
+		internalIP:         internalIP,
+		targetDomain:       targetDomain,
+		upstream:           upstream,
+		staticRecords:      records,
+		delay:              delay,
+		rebindAfter:        rebindAfter,
+		randomMode:         randomMode,
+		internalForIndexes: internalForIndexes,
+		validForIndexes:    validForIndexes,
+		logger:             logger,
 	}
 }
 
@@ -138,7 +144,13 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				count := rs.queryCounts[cleanDomain]
 				rs.mu.Unlock()
 
-				if count > rs.rebindAfter {
+				if rs.validForIndexes[count] {
+					ipToReturn = rs.validIP
+					stateStr = "OVERRIDE_VALID"
+				} else if rs.internalForIndexes[count] {
+					ipToReturn = rs.internalIP
+					stateStr = "OVERRIDE_INTERNAL"
+				} else if count > rs.rebindAfter {
 					ipToReturn = rs.internalIP
 					stateStr = "RETURNING"
 				} else {
@@ -175,7 +187,32 @@ func (rs *RecordState) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(msg)
 }
 
-const Version = "0.9.0"
+const Version = "0.11.0"
+
+func parseIndexList(s string) (map[int]bool, error) {
+	if s == "" {
+		return nil, nil
+	}
+	result := make(map[int]bool)
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("invalid index %q: must be a positive integer", part)
+		}
+		if n < 1 {
+			return nil, fmt.Errorf("invalid index %d: must be >= 1", n)
+		}
+		result[n] = true
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
@@ -193,7 +230,17 @@ func main() {
 	delayMs := flag.Int("delay", 0, "Delay in milliseconds before replying to dynamic record queries")
 	rebindAfter := flag.Int("rebind-after", 1, "Number of queries to return valid IP before switching to internal IP")
 	randomMode := flag.Bool("random", false, "Randomly return valid or internal IP using DNS query ID (rbndr-style)")
+	internalForStr := flag.String("internal-for", "", "Comma-separated query indexes that return internal IP (default: all other queries return valid)")
+	validForStr := flag.String("valid-for", "", "Comma-separated query indexes that return valid IP (default: all other queries return internal)")
 	flag.Parse()
+
+	// Check if rebind-after was explicitly set
+	rebindAfterExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "rebind-after" {
+			rebindAfterExplicit = true
+		}
+	})
 
 	if *validIPStr == "" || *internalIPStr == "" || *targetDomain == "" {
 		fmt.Println("Error: -valid, -internal and -domain flags are required")
@@ -201,10 +248,54 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *randomMode && *rebindAfter != 1 {
-		fmt.Println("Error: -random and -rebind-after cannot be used together")
-		flag.Usage()
+	// Parse index lists
+	internalForIndexes, err := parseIndexList(*internalForStr)
+	if err != nil {
+		fmt.Printf("Error in -internal-for: %v\n", err)
 		os.Exit(1)
+	}
+	validForIndexes, err := parseIndexList(*validForStr)
+	if err != nil {
+		fmt.Printf("Error in -valid-for: %v\n", err)
+		os.Exit(1)
+	}
+
+	hasInternalFor := len(internalForIndexes) > 0
+	hasValidFor := len(validForIndexes) > 0
+
+	// Validate flag combinations
+	if *randomMode {
+		if rebindAfterExplicit {
+			fmt.Println("Error: -random and -rebind-after cannot be used together")
+			flag.Usage()
+			os.Exit(1)
+		}
+		if hasInternalFor || hasValidFor {
+			fmt.Println("Error: -random cannot be used with -internal-for or -valid-for")
+			flag.Usage()
+			os.Exit(1)
+		}
+	}
+
+	// Check for overlapping indexes between internal-for and valid-for
+	if hasInternalFor && hasValidFor {
+		for idx := range internalForIndexes {
+			if validForIndexes[idx] {
+				fmt.Printf("Error: query index %d appears in both -internal-for and -valid-for\n", idx)
+				os.Exit(1)
+			}
+		}
+	}
+
+	// Adjust rebindAfter when not explicitly set
+	if !rebindAfterExplicit {
+		if hasInternalFor && !hasValidFor {
+			// internal-for alone: all queries return valid by default
+			*rebindAfter = math.MaxInt32
+		} else if hasValidFor {
+			// valid-for (with or without internal-for): all queries return internal by default
+			*rebindAfter = 0
+		}
 	}
 
 	validIP := net.ParseIP(*validIPStr)
@@ -240,7 +331,7 @@ func main() {
 
 	logger := log.New(logOutput, "", log.LstdFlags)
 
-	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, time.Duration(*delayMs)*time.Millisecond, *rebindAfter, *randomMode, logger)
+	recordState := NewRecordState(validIP, internalIP, *targetDomain, *upstreamDNS, records, time.Duration(*delayMs)*time.Millisecond, *rebindAfter, *randomMode, internalForIndexes, validForIndexes, logger)
 
 	// DNS server handler
 	dns.HandleFunc(".", recordState.handleDNSRequest)
@@ -254,8 +345,18 @@ func main() {
 	}
 	if *randomMode {
 		fmt.Printf("Mode: Random (rbndr-style, based on DNS query ID LSB)\n")
+	} else if *rebindAfter >= math.MaxInt32 {
+		fmt.Printf("Mode: All queries return valid IP by default\n")
+	} else if *rebindAfter == 0 {
+		fmt.Printf("Mode: All queries return internal IP by default\n")
 	} else {
 		fmt.Printf("Mode: Sequential (rebind after %d queries)\n", *rebindAfter)
+	}
+	if hasInternalFor {
+		fmt.Printf("Override: Queries [%s] return internal IP\n", *internalForStr)
+	}
+	if hasValidFor {
+		fmt.Printf("Override: Queries [%s] return valid IP\n", *validForStr)
 	}
 	fmt.Printf("Valid IP: %s\n", validIP.String())
 	fmt.Printf("Internal IP: %s\n", internalIP.String())
